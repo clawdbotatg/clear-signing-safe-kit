@@ -84,7 +84,7 @@ export async function simulate(o: { chain: number; safe: string; tx: SafeTxLike;
 
 /** The answer as coins out and in. fees: what the tx pays a relay, per token (lowercase address, "eth" = the coin),
  * taken out of pay (shown on its own line). */
-export function moves(a: SimAnswer, fees: Record<string, bigint> = {}): Moves {
+export function moves(a: Pick<SimAnswer, "ok" | "block" | "changes">, fees: Record<string, bigint> = {}): Moves {
   if (a.ok !== "ok") return { pay: [], get: [], fails: "reverts", block: a.block };
   const pay: Move[] = [];
   const get: Move[] = [];
