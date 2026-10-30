@@ -1,0 +1,30 @@
+{
+  "name": "clear-signing-safe-kit",
+  "version": "0.1.0",
+  "description": "What a Safe transaction does, in plain English: clear signing, swap words, danger rules, and clear-sim answers checked in the browser. Shared by Instant Wallet and wedgie.dev.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+    "./explain": { "types": "./dist/explain.d.ts", "default": "./dist/explain.js" }
+  },
+  "files": ["dist", "src"],
+  "scripts": {
+    "build": "rm -rf dist && tsc",
+    "test": "node --test test/"
+  },
+  "peerDependencies": {
+    "viem": "^2",
+    "@ethereum-sourcify/clear-signing": "^0.2.2"
+  },
+  "peerDependenciesMeta": {
+    "@ethereum-sourcify/clear-signing": { "optional": true }
+  },
+  "devDependencies": {
+    "@ethereum-sourcify/clear-signing": "^0.2.2",
+    "typescript": "^5.9.3",
+    "viem": "^2.57.2"
+  }
+}
