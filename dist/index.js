@@ -6,3 +6,4 @@ export * from "./clear.js";
 export { UNIVERSAL_ROUTERS, WETH, swapWords, uniswapWords } from "./uniswap.js";
 export * from "./history.js";
 export * from "./names.js";
+export * from "./wedgie.js";
