@@ -7,6 +7,7 @@ What a Safe transaction does, in plain English. Shared by [Instant Wallet](https
 - `swapWords`: a Uniswap Universal Router swap: what you pay, the least you get.
 - `clearBundle`: the ERC-7730 bundle the wedgie checks and shows.
 - `multisend`: open and build MultiSendCallOnly batches.
+- `primaryName`, `nameAddress`, `avatarUrl`: ENS through the Universal Resolver: a chain's own names first (.base.eth), gateways included.
 - `chainHistory`, `moved`: a Safe's past from its own chain (no Safe API), spam and look-alike transfers left out; what each one moved.
 - `clear-signing-safe-kit/explain` (server): each call in words: a swap, else the ERC-7730 registry through Sourcify's formatter.
 
