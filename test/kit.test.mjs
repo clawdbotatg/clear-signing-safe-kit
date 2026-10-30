@@ -40,3 +40,26 @@ test("simulate a batch on sim.wedgie.dev, answer checked", { skip: !process.env.
   assert.ok(a, "verified answer");
   console.log(moves(a, { "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913": 10000n }), a.ok);
 });
+
+// 10-30: Uniswap's ETH in = WRAP_ETH(amount) then a V3 swap of CONTRACT_BALANCE (1 << 255): never show the flag as an amount
+test("a swap of the router's whole balance reads the wrapped amount, never 2^255", async () => {
+  const { swapWords } = await import("../dist/index.js");
+  const { encodeAbiParameters, parseAbiParameters } = await import("viem");
+  const WETH = "0x4200000000000000000000000000000000000006";
+  const USDC = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913";
+  const path = encodePacked(["address", "uint24", "address"], [WETH, 500, USDC]);
+  const wrap = encodeAbiParameters(parseAbiParameters("address, uint256"), ["0x0000000000000000000000000000000000000002", 10n ** 15n]);
+  const swap = encodeAbiParameters(parseAbiParameters("address, uint256, uint256, bytes, bool"), [SAFE, 1n << 255n, 2166912n, path, false]);
+  const data = encodeFunctionData({ abi: parseAbi(["function execute(bytes commands, bytes[] inputs, uint256 deadline)"]), functionName: "execute", args: ["0x0b00", [wrap, swap], 9999999999n] });
+  const tok = async a => (a.toLowerCase() === USDC ? { symbol: "USDC", decimals: 6 } : { symbol: "WETH", decimals: 18 });
+  const w = await swapWords(8453, { to: "0x6ff5693b99212da76ad316178a184ab56d299b43", data, value: 10n ** 15n }, "ETH", tok);
+  assert.equal(w.pay.amount, "0.001");
+  assert.equal(w.pay.symbol, "ETH");
+  assert.equal(w.get.amount, "2.166912");
+  // nothing to read it from: say it isn't known
+  const bare = encodeFunctionData({ abi: parseAbi(["function execute(bytes commands, bytes[] inputs, uint256 deadline)"]), functionName: "execute", args: ["0x00", [swap], 9999999999n] });
+  const u = await swapWords(8453, { to: "0x6ff5693b99212da76ad316178a184ab56d299b43", data: bare }, "ETH", tok);
+  assert.equal(u.pay.unknown, true);
+  assert.equal(u.pay.amount, "");
+  assert.doesNotMatch(u.text, /\d{20}/);
+});

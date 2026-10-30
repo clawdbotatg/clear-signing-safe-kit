@@ -1,10 +1,15 @@
 import { decodeAbiParameters, decodeFunctionData, formatUnits, parseAbi, parseAbiParameters, zeroAddress } from "viem";
 const ur = parseAbi(["function execute(bytes commands, bytes[] inputs, uint256 deadline)", "function execute(bytes commands, bytes[] inputs)"]);
 const POOLKEY = "(address,address,uint24,int24,address)";
+/** Not amounts: the router's flags. CONTRACT_BALANCE (1 << 255, V2/V3/WRAP_ETH) = "all the router holds now";
+ * a V4 exact-in of 0 (OPEN_DELTA) = "whatever is owed". The real amount sits in an earlier command (WRAP_ETH,
+ * PERMIT2_TRANSFER_FROM) or in the call's value. Shown as a number it read "−57,896,044,618,658,100,000,… ETH" (10-30). */
+export const CONTRACT_BALANCE = 1n << 255n;
 /** The tokens at each end of a V3 path (20-byte token, 3-byte fee, 20-byte token, …). */
 const v3ends = (p) => ["0x" + p.slice(2, 42), "0x" + p.slice(-40)];
 function legs(commands, inputs) {
     const out = [];
+    let funded = 0n; // what went into the router before the swap (WRAP_ETH, PERMIT2_TRANSFER_FROM): the real amount behind a flag
     let min = 0n; // a minimum checked after the swap (UNWRAP_WETH, SWEEP, V4 TAKE_ALL): routes often swap with 0 and check here
     let unwrap = false;
     let wrap = false;
@@ -22,8 +27,16 @@ function legs(commands, inputs) {
                 const [, a, b, path] = decodeAbiParameters(parseAbiParameters("address, uint256, uint256, address[], bool"), d);
                 out.push({ tin: path[0], tout: path[path.length - 1], amt: a, lim: b, exactIn: t === 0x08 });
             }
-            else if (t === 0x0b)
+            else if (t === 0x0b) {
                 wrap = true;
+                const [, m] = decodeAbiParameters(parseAbiParameters("address, uint256"), d);
+                if (m < CONTRACT_BALANCE)
+                    funded += m;
+            }
+            else if (t === 0x02) {
+                const [, , m] = decodeAbiParameters(parseAbiParameters("address, address, uint160"), d);
+                funded += m;
+            }
             else if (t === 0x0c) {
                 unwrap = true;
                 const [, m] = decodeAbiParameters(parseAbiParameters("address, uint256"), d);
@@ -44,7 +57,7 @@ function legs(commands, inputs) {
                         const [[key, zeroForOne, x, y]] = decodeAbiParameters(parseAbiParameters(`(${POOLKEY}, bool, uint128, uint128, bytes)`), p);
                         const [c0, c1] = [key[0], key[1]];
                         const [tin, tout] = zeroForOne ? [c0, c1] : [c1, c0];
-                        out.push({ tin, tout, amt: x, lim: y, exactIn: k === 0x06 });
+                        out.push({ tin, tout, amt: x, lim: y, exactIn: k === 0x06, open: k === 0x06 && x === 0n });
                     }
                     else if (k === 0x0f) {
                         const [, m] = decodeAbiParameters(parseAbiParameters("address, uint256"), p);
@@ -55,7 +68,7 @@ function legs(commands, inputs) {
                         const [[cur, path, x, y]] = decodeAbiParameters(parseAbiParameters("(address, (address,uint24,int24,address,bytes)[], uint128, uint128)"), p);
                         const end = path.length ? path[path.length - 1][0] : cur;
                         const start = path.length ? path[0][0] : cur;
-                        out.push(k === 0x07 ? { tin: cur, tout: end, amt: x, lim: y, exactIn: true } : { tin: start, tout: cur, amt: x, lim: y, exactIn: false });
+                        out.push(k === 0x07 ? { tin: cur, tout: end, amt: x, lim: y, exactIn: true, open: x === 0n } : { tin: start, tout: cur, amt: x, lim: y, exactIn: false });
                     }
                 });
             }
@@ -64,9 +77,9 @@ function legs(commands, inputs) {
             // a command we can't read: the rest still can be
         }
     });
-    return { legs: out, unwrap, wrap, min };
+    return { legs: out, unwrap, wrap, min, funded };
 }
-export async function uniswapWords(data, native, wrapped, token) {
+export async function uniswapWords(data, native, wrapped, token, value = 0n) {
     let d;
     try {
         d = decodeFunctionData({ abi: ur, data });
@@ -74,14 +87,18 @@ export async function uniswapWords(data, native, wrapped, token) {
     catch {
         return null;
     }
-    const { legs: ls, unwrap, wrap, min } = legs(d.args[0], d.args[1]);
+    const { legs: ls, unwrap, wrap, min, funded } = legs(d.args[0], d.args[1]);
     if (!ls.length)
         return null;
     // a route split over several pools: the first leg's way in, the last's way out, amounts added up
     const first = ls[0];
     const last = ls[ls.length - 1];
     const same = ls.filter(l => l.tin.toLowerCase() === first.tin.toLowerCase() && l.tout.toLowerCase() === last.tout.toLowerCase());
-    const amt = same.reduce((s, l) => s + l.amt, 0n);
+    // an amount that's a flag (all the router holds, the open delta): what went in before it, else the coin sent with the call
+    const flagged = same.some(l => l.exactIn && (l.open || l.amt >= CONTRACT_BALANCE));
+    const ethIn = first.tin.toLowerCase() === zeroAddress || (!!wrapped && first.tin.toLowerCase() === wrapped.toLowerCase());
+    const sent = funded || (ethIn ? value : 0n);
+    const amt = flagged ? (sent > 0n && same.every(l => l.exactIn && (l.open || l.amt >= CONTRACT_BALANCE)) ? sent : null) : same.reduce((s, l) => s + l.amt, 0n);
     let lim = same.reduce((s, l) => s + l.lim, 0n);
     if (first.exactIn && lim < min)
         lim = min;
@@ -91,12 +108,16 @@ export async function uniswapWords(data, native, wrapped, token) {
         return null;
     const f = (v, t) => `${Number(formatUnits(v, t.decimals)).toLocaleString("en-US", { maximumSignificantDigits: 6 })} ${t.symbol}`;
     const u = (v, t) => formatUnits(v, t.decimals);
-    if (first.exactIn)
+    if (first.exactIn) {
+        const paid = amt === null ? ti.symbol : f(amt, ti);
         return {
-            text: lim === 0n ? `Swap ${f(amt, ti)} for ${to.symbol} (no minimum)` : `Swap ${f(amt, ti)} for at least ${f(lim, to)}`,
-            pay: { symbol: ti.symbol, amount: u(amt, ti) },
+            text: lim === 0n ? `Swap ${paid} for ${to.symbol} (no minimum)` : `Swap ${paid} for at least ${f(lim, to)}`,
+            pay: amt === null ? { symbol: ti.symbol, amount: "", unknown: true } : { symbol: ti.symbol, amount: u(amt, ti) },
             get: { symbol: to.symbol, amount: u(lim, to), least: true },
         };
+    }
+    if (amt === null)
+        return null;
     return { text: `Swap at most ${f(lim, ti)} for ${f(amt, to)}`, pay: { symbol: ti.symbol, amount: u(lim, ti), most: true }, get: { symbol: to.symbol, amount: u(amt, to) } };
 }
 // Uniswap's Universal Routers (code checked on each chain, 10-29); any other address is named by its address
@@ -120,7 +141,12 @@ const EXECUTE = ["0x3593564c", "0x24856bc3"];
 export async function swapWords(chain, c, native, token) {
     if (!EXECUTE.includes(c.data.slice(0, 10).toLowerCase()))
         return null;
-    const w = await uniswapWords(c.data, native, WETH[chain], token);
+    let value = 0n;
+    try {
+        value = BigInt(c.value ?? 0);
+    }
+    catch { }
+    const w = await uniswapWords(c.data, native, WETH[chain], token, value);
     if (!w)
         return null;
     const where = UNIVERSAL_ROUTERS.includes(c.to.toLowerCase()) ? "on Uniswap" : `through ${c.to.slice(0, 6)}…${c.to.slice(-4)}`;
