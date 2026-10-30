@@ -61,7 +61,7 @@ export function explainer(o) {
         try {
             const w = await swapWords(chain, c, o.chain(chain)?.native ?? "ETH", a => token(chain, a));
             if (w)
-                return { what: w.text, fields: [], swap: { pay: w.pay, get: w.get } };
+                return { what: w.text, fields: [], who: "Uniswap", swap: { pay: w.pay, get: w.get } };
             const res = await resolver();
             if (!res)
                 return null;
@@ -76,7 +76,9 @@ export function explainer(o) {
                 for (const x of isFieldGroup(f) ? f.fields : [f])
                     fields.push({ label: x.label, value: x.value, ...(x.rawAddress ? { address: x.rawAddress } : {}) });
             const intent = typeof m.intent === "string" ? m.intent : m.intent ? Object.values(m.intent)[0] : "";
-            return { what: m.interpolatedIntent || intent, fields };
+            // who it's with: the descriptor's own owner (e.g. "Aave", "Morpho"), else its contract name
+            const who = m.metadata?.owner || m.metadata?.contractName;
+            return { what: m.interpolatedIntent || intent, fields, ...(who ? { who } : {}) };
         }
         catch {
             return null;

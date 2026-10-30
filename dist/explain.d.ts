@@ -16,6 +16,7 @@ export type Field = {
 export type Told = {
     what: string;
     fields: Field[];
+    who?: string;
     swap?: Pick<Swap, "pay" | "get">;
 } | null;
 export type Call = {
