@@ -7,7 +7,11 @@ import { type Swap } from "./uniswap.js";
  *      The same data the wedgie reads (wedgie-dev wire/release.py). A call to the Safe itself reads as the 0x5afe…
  *      "This Safe" binding.
  * null: nothing for that call (the page says what it can itself).
+ * src: where the words came from: "audited" (an EF registry descriptor an auditor signed: its sigs/ file; the registry
+ * drops a signature when the descriptor changes), "ef" (EF registry, unsigned), "ours" (clear-descriptors), "code"
+ * (our own reading: the Uniswap swap). Every wallet shows the same mark for each.
  */
+export type Src = "audited" | "ef" | "ours" | "code";
 export type Field = {
     label: string;
     value: string;
@@ -19,6 +23,7 @@ export type Told = {
     fields: Field[];
     who?: string;
     swap?: Pick<Swap, "pay" | "get">;
+    src?: Src;
 } | null;
 export type Call = {
     to: string;

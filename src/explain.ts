@@ -10,9 +10,13 @@ import { type Swap, type Tok, swapWords } from "./uniswap.js";
  *      The same data the wedgie reads (wedgie-dev wire/release.py). A call to the Safe itself reads as the 0x5afe…
  *      "This Safe" binding.
  * null: nothing for that call (the page says what it can itself).
+ * src: where the words came from: "audited" (an EF registry descriptor an auditor signed: its sigs/ file; the registry
+ * drops a signature when the descriptor changes), "ef" (EF registry, unsigned), "ours" (clear-descriptors), "code"
+ * (our own reading: the Uniswap swap). Every wallet shows the same mark for each.
  */
+export type Src = "audited" | "ef" | "ours" | "code";
 export type Field = { label: string; value: string; address?: string };
-export type Told = { what: string; short?: string; fields: Field[]; who?: string; swap?: Pick<Swap, "pay" | "get"> } | null;
+export type Told = { what: string; short?: string; fields: Field[]; who?: string; swap?: Pick<Swap, "pay" | "get">; src?: Src } | null;
 export type Call = { to: string; value: string | bigint; data: string };
 export type Token = { name: string; symbol: string; decimals: number };
 
@@ -39,15 +43,30 @@ async function ours(): Promise<Record<string, string>> {
   return out;
 }
 
+/** The registry's auditor signatures: each "<dir>/sigs/<name>.<auditor>.json" (GitHub's tree of the repo). Empty if it can't say. */
+async function sigs(): Promise<string[]> {
+  const t = await getJson("https://api.github.com/repos/ethereum/clear-signing-erc7730-registry/git/trees/master?recursive=1").catch(() => null);
+  return (t?.tree ?? []).map((x: { path: string }) => x.path).filter((p: string) => p.includes("/sigs/"));
+}
+
+/** Where a descriptor path's words come from. */
+function srcOf(path: string | undefined, signed: string[]): Src {
+  if (path?.startsWith(OURS)) return "ours";
+  if (!path) return "ef"; // a generic ERC descriptor (ercs/: ERC-20, ERC-721): the registry's, not per contract
+  const i = path.lastIndexOf("/");
+  const pre = `${path.slice(0, i)}/sigs/${path.slice(i + 1).replace(/\.json$/, "")}.`;
+  return signed.some(p => p.startsWith(pre)) ? "audited" : "ef";
+}
+
 // kept while the server is warm, for an hour: a new descriptor of ours shows up without a deploy
-let built: { at: number; r: Promise<DescriptorResolver | undefined> } | null = null;
+let built: { at: number; r: Promise<(DescriptorResolver & { signed: string[] }) | undefined> } | null = null;
 function resolver() {
   if (built && Date.now() - built.at < 3600_000) return built.r;
-  const r = Promise.all([fetchPrebuiltRegistryIndex(), ours()])
-    .then(([reg, our]): DescriptorResolver => {
+  const r = Promise.all([fetchPrebuiltRegistryIndex(), ours(), sigs()])
+    .then(([reg, our, signed]) => {
       const lower = Object.fromEntries(Object.entries(reg.calldataIndex).map(([k, v]) => [k.toLowerCase(), v]));
       const index: RegistryIndex = { ...reg, calldataIndex: { ...lower, ...our } };
-      return { index, fetchDescriptor: path => getJson(path.startsWith("https://") ? path : REGISTRY + path) };
+      return { index, signed, fetchDescriptor: (path: string) => getJson(path.startsWith("https://") ? path : REGISTRY + path) };
     })
     .catch(() => {
       built = null;
@@ -80,7 +99,7 @@ export function explainer(o: { token: (chain: number, a: string) => Promise<Toke
   return async function explain(chain: number, safe: string, c: Call): Promise<Told> {
     try {
       const w = await swapWords(chain, c, o.chain(chain)?.native ?? "ETH", a => token(chain, a) as Promise<Tok>);
-      if (w) return { what: w.text, fields: [], who: "Uniswap", swap: { pay: w.pay, get: w.get } };
+      if (w) return { what: w.text, fields: [], who: "Uniswap", swap: { pay: w.pay, get: w.get }, src: "code" };
       const res = await resolver();
       if (!res) return null;
       const to = c.to.toLowerCase() === safe.toLowerCase() ? THIS_SAFE : c.to;
@@ -97,7 +116,8 @@ export function explainer(o: { token: (chain: number, a: string) => Promise<Toke
       const who = m.metadata?.owner || m.metadata?.contractName;
       // short: the descriptor's plain intent ("Borrow from Morpho Market"), for a headline; what: the full sentence,
       // which can carry every address in the call
-      return { what: m.interpolatedIntent || intent, ...(intent ? { short: intent } : {}), fields, ...(who ? { who } : {}) };
+      const src = srcOf(res.index.calldataIndex[`eip155:${chain}:${to.toLowerCase()}`] as string | undefined, res.signed);
+      return { what: m.interpolatedIntent || intent, ...(intent ? { short: intent } : {}), fields, ...(who ? { who } : {}), src };
     } catch {
       return null;
     }

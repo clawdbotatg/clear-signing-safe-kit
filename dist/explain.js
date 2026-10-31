@@ -19,16 +19,31 @@ async function ours() {
     }));
     return out;
 }
+/** The registry's auditor signatures: each "<dir>/sigs/<name>.<auditor>.json" (GitHub's tree of the repo). Empty if it can't say. */
+async function sigs() {
+    const t = await getJson("https://api.github.com/repos/ethereum/clear-signing-erc7730-registry/git/trees/master?recursive=1").catch(() => null);
+    return (t?.tree ?? []).map((x) => x.path).filter((p) => p.includes("/sigs/"));
+}
+/** Where a descriptor path's words come from. */
+function srcOf(path, signed) {
+    if (path?.startsWith(OURS))
+        return "ours";
+    if (!path)
+        return "ef"; // a generic ERC descriptor (ercs/: ERC-20, ERC-721): the registry's, not per contract
+    const i = path.lastIndexOf("/");
+    const pre = `${path.slice(0, i)}/sigs/${path.slice(i + 1).replace(/\.json$/, "")}.`;
+    return signed.some(p => p.startsWith(pre)) ? "audited" : "ef";
+}
 // kept while the server is warm, for an hour: a new descriptor of ours shows up without a deploy
 let built = null;
 function resolver() {
     if (built && Date.now() - built.at < 3600_000)
         return built.r;
-    const r = Promise.all([fetchPrebuiltRegistryIndex(), ours()])
-        .then(([reg, our]) => {
+    const r = Promise.all([fetchPrebuiltRegistryIndex(), ours(), sigs()])
+        .then(([reg, our, signed]) => {
         const lower = Object.fromEntries(Object.entries(reg.calldataIndex).map(([k, v]) => [k.toLowerCase(), v]));
         const index = { ...reg, calldataIndex: { ...lower, ...our } };
-        return { index, fetchDescriptor: path => getJson(path.startsWith("https://") ? path : REGISTRY + path) };
+        return { index, signed, fetchDescriptor: (path) => getJson(path.startsWith("https://") ? path : REGISTRY + path) };
     })
         .catch(() => {
         built = null;
@@ -61,7 +76,7 @@ export function explainer(o) {
         try {
             const w = await swapWords(chain, c, o.chain(chain)?.native ?? "ETH", a => token(chain, a));
             if (w)
-                return { what: w.text, fields: [], who: "Uniswap", swap: { pay: w.pay, get: w.get } };
+                return { what: w.text, fields: [], who: "Uniswap", swap: { pay: w.pay, get: w.get }, src: "code" };
             const res = await resolver();
             if (!res)
                 return null;
@@ -80,7 +95,8 @@ export function explainer(o) {
             const who = m.metadata?.owner || m.metadata?.contractName;
             // short: the descriptor's plain intent ("Borrow from Morpho Market"), for a headline; what: the full sentence,
             // which can carry every address in the call
-            return { what: m.interpolatedIntent || intent, ...(intent ? { short: intent } : {}), fields, ...(who ? { who } : {}) };
+            const src = srcOf(res.index.calldataIndex[`eip155:${chain}:${to.toLowerCase()}`], res.signed);
+            return { what: m.interpolatedIntent || intent, ...(intent ? { short: intent } : {}), fields, ...(who ? { who } : {}), src };
         }
         catch {
             return null;
