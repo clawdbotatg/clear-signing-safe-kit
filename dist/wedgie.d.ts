@@ -5,6 +5,8 @@
  * caller checks the hash and makes the signatures. ask: one request on the wedgie's line (USB serial or the drive).
  */
 export type WedgieAsk = (msg: Record<string, unknown>, ms: number) => Promise<any>;
+/** The line, then raw bytes right after it (USB only). */
+export type WedgieAskRaw = (msg: Record<string, unknown>, raw: Uint8Array, ms: number) => Promise<any>;
 export type WedgieTx = {
     chainId: number;
     safe: string;
@@ -20,18 +22,22 @@ export type WedgieTx = {
     nonce: number;
 };
 /** What its hello said: safe_chunk (hex chars per piece; none: an app too old for pieces), safe_clear (the clear-signing
- * data it trusts), safe_sim ("p256": it checks a simulation), safe_review (the review round it saved). */
+ * data it trusts), safe_sim ("p256": it checks a simulation), safe_review (the review round it saved), safe_raw (bytes per raw piece, safe-52+). */
 export type WedgieHello = {
     safe_chunk?: number;
     safe_clear?: string | null;
     safe_sim?: string;
     safe_review?: number;
+    safe_raw?: number;
 };
 export declare const WEDGIE_LINE = 3000;
 export declare const WEDGIE_DATA_MAX = 8000;
 export declare const WEDGIE_CHUNK = 2000;
 export declare function wedgieSign(o: {
     ask: WedgieAsk;
+    /** pieces as raw bytes after their line, when the wedgie takes them (safe_raw): a real wedgie read 2000 hex chars
+     * in 0.75 s, a char at a time, and their text broke its heap up (10-30, MemoryError on a swap) */
+    askRaw?: WedgieAskRaw;
     hello: WedgieHello;
     tx: WedgieTx;
     /** smaller pieces and lines (the phone's drive) */
