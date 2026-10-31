@@ -19,31 +19,60 @@ async function ours() {
     }));
     return out;
 }
-/** The registry's auditor signatures: each "<dir>/sigs/<name>.<auditor>.json" (GitHub's tree of the repo). Empty if it can't say. */
-async function sigs() {
-    const t = await getJson("https://api.github.com/repos/ethereum/clear-signing-erc7730-registry/git/trees/master?recursive=1").catch(() => null);
-    return (t?.tree ?? []).map((x) => x.path).filter((p) => p.includes("/sigs/"));
+const TREE = (ref) => `https://api.github.com/repos/ethereum/clear-signing-erc7730-registry/git/trees/${ref}?recursive=1`;
+/** The registry's files now (path -> blob sha) and its auditor signatures ("<dir>/sigs/<name>.<auditor>.json"). Empty if it can't say. */
+async function tree(ref) {
+    const t = await getJson(TREE(ref)).catch(() => null);
+    return Object.fromEntries((t?.tree ?? []).map((x) => [x.path, x.sha]));
+}
+// clear-review (our robot check of every EF descriptor: does the screen say what the call really does?), as wedgie.dev
+// publishes it: latest.json -> its round (the registry commit it read) -> <chain>/<address>.json, a key per passed selector
+const REVIEW = "https://wedgie.dev/clear/review/";
+let round = null;
+function review() {
+    if (round && Date.now() - round.at < 3600_000)
+        return round.r;
+    const r = (async () => {
+        const n = (await getJson(`${REVIEW}latest.json`))?.round;
+        const rd = await getJson(`${REVIEW}${n}/round.json`);
+        return { n, files: await tree(rd.registry) }; // the files as reviewed: a ✅ holds only while a file is the same
+    })().catch(() => null);
+    round = { at: Date.now(), r };
+    return r;
+}
+const passes = new Map();
+/** Did clear-review pass this function, on this exact file? */
+async function checked(chain, to, sel, path, now) {
+    const rv = await review();
+    if (!rv || !now[path] || rv.files[path] !== now[path])
+        return false;
+    const k = `${rv.n}/${chain}/${to.toLowerCase()}`;
+    if (!passes.has(k))
+        passes.set(k, getJson(`${REVIEW}${k}.json`).catch(() => ({})));
+    return sel.toLowerCase() in (await passes.get(k));
 }
 /** Where a descriptor path's words come from. */
-function srcOf(path, signed) {
+async function srcOf(path, now, chain, to, sel) {
     if (path?.startsWith(OURS))
         return "ours";
     if (!path)
         return "ef"; // a generic ERC descriptor (ercs/: ERC-20, ERC-721): the registry's, not per contract
     const i = path.lastIndexOf("/");
     const pre = `${path.slice(0, i)}/sigs/${path.slice(i + 1).replace(/\.json$/, "")}.`;
-    return signed.some(p => p.startsWith(pre)) ? "audited" : "ef";
+    if (Object.keys(now).some(p => p.startsWith(pre)))
+        return "audited";
+    return (await checked(chain, to, sel, path, now).catch(() => false)) ? "checked" : "ef";
 }
 // kept while the server is warm, for an hour: a new descriptor of ours shows up without a deploy
 let built = null;
 function resolver() {
     if (built && Date.now() - built.at < 3600_000)
         return built.r;
-    const r = Promise.all([fetchPrebuiltRegistryIndex(), ours(), sigs()])
-        .then(([reg, our, signed]) => {
+    const r = Promise.all([fetchPrebuiltRegistryIndex(), ours(), tree("master")])
+        .then(([reg, our, now]) => {
         const lower = Object.fromEntries(Object.entries(reg.calldataIndex).map(([k, v]) => [k.toLowerCase(), v]));
         const index = { ...reg, calldataIndex: { ...lower, ...our } };
-        return { index, signed, fetchDescriptor: (path) => getJson(path.startsWith("https://") ? path : REGISTRY + path) };
+        return { index, now, fetchDescriptor: (path) => getJson(path.startsWith("https://") ? path : REGISTRY + path) };
     })
         .catch(() => {
         built = null;
@@ -109,7 +138,7 @@ export function explainer(o) {
             const who = m.metadata?.owner || m.metadata?.contractName;
             // short: the descriptor's plain intent ("Borrow from Morpho Market"), for a headline; what: the full sentence,
             // which can carry every address in the call
-            const src = srcOf(res.index.calldataIndex[`eip155:${chain}:${to.toLowerCase()}`], res.signed);
+            const src = await srcOf(res.index.calldataIndex[`eip155:${chain}:${to.toLowerCase()}`], res.now, chain, to, c.data.slice(0, 10));
             const what = inner.length ? inner.map(x => x.what).filter(Boolean).join(" · ") : m.interpolatedIntent || outer;
             return { what: what || outer, ...(intent ? { short: intent } : {}), fields, ...(who ? { who } : {}), src };
         }

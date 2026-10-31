@@ -8,10 +8,11 @@ import { type Swap } from "./uniswap.js";
  *      "This Safe" binding.
  * null: nothing for that call (the page says what it can itself).
  * src: where the words came from: "audited" (an EF registry descriptor an auditor signed: its sigs/ file; the registry
- * drops a signature when the descriptor changes), "ef" (EF registry, unsigned), "ours" (clear-descriptors), "code"
+ * drops a signature when the descriptor changes), "checked" (EF registry, this function passed clear-review's robot
+ * check and the file hasn't changed since), "ef" (EF registry, neither), "ours" (clear-descriptors), "code"
  * (our own reading: the Uniswap swap). Every wallet shows the same mark for each.
  */
-export type Src = "audited" | "ef" | "ours" | "code";
+export type Src = "audited" | "checked" | "ef" | "ours" | "code";
 export type Field = {
     label: string;
     value: string;
