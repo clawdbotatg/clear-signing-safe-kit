@@ -2,9 +2,12 @@ import { clearBundle } from "./clear.js";
 import { SIM_DEFAULT, simulate } from "./sim.js";
 export const WEDGIE_LINE = 3000; // a safe_sign line over this sends its data in pieces first (a real wedgie, 10-28: a 3.4 KB line, MemoryError)
 export const WEDGIE_DATA_MAX = 8000; // bytes of tx data Safe Signer takes
+// hex chars per piece at most, whatever its hello says (safe_chunk 4000): a real wedgie's heap is broken into holes and
+// a 4 KB line didn't fit when the third piece of a swap's bundle came (10-30, safe-49: MemoryError, it answered "bad json")
+export const WEDGIE_CHUNK = 2000;
 export async function wedgieSign(o) {
     const { ask, hello: h, tx } = o;
-    const chunk = Math.min(h.safe_chunk || 0, o.chunk || Infinity) || 0;
+    const chunk = Math.min(h.safe_chunk || 0, o.chunk || WEDGIE_CHUNK) || 0;
     const lineMax = o.lineMax ?? WEDGIE_LINE;
     const n = (tx.data.length - 2) / 2;
     const fits = (t) => JSON.stringify({ id: 1000, type: "safe_sign", tx: t }).length <= lineMax;

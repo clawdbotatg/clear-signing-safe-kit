@@ -29,6 +29,7 @@ export type WedgieHello = {
 };
 export declare const WEDGIE_LINE = 3000;
 export declare const WEDGIE_DATA_MAX = 8000;
+export declare const WEDGIE_CHUNK = 2000;
 export declare function wedgieSign(o: {
     ask: WedgieAsk;
     hello: WedgieHello;
