@@ -78,7 +78,9 @@ export function explainer(o) {
             const intent = typeof m.intent === "string" ? m.intent : m.intent ? Object.values(m.intent)[0] : "";
             // who it's with: the descriptor's own owner (e.g. "Aave", "Morpho"), else its contract name
             const who = m.metadata?.owner || m.metadata?.contractName;
-            return { what: m.interpolatedIntent || intent, fields, ...(who ? { who } : {}) };
+            // short: the descriptor's plain intent ("Borrow from Morpho Market"), for a headline; what: the full sentence,
+            // which can carry every address in the call
+            return { what: m.interpolatedIntent || intent, ...(intent ? { short: intent } : {}), fields, ...(who ? { who } : {}) };
         }
         catch {
             return null;

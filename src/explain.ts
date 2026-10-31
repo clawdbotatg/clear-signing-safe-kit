@@ -12,7 +12,7 @@ import { type Swap, type Tok, swapWords } from "./uniswap.js";
  * null: nothing for that call (the page says what it can itself).
  */
 export type Field = { label: string; value: string; address?: string };
-export type Told = { what: string; fields: Field[]; who?: string; swap?: Pick<Swap, "pay" | "get"> } | null;
+export type Told = { what: string; short?: string; fields: Field[]; who?: string; swap?: Pick<Swap, "pay" | "get"> } | null;
 export type Call = { to: string; value: string | bigint; data: string };
 export type Token = { name: string; symbol: string; decimals: number };
 
@@ -95,7 +95,9 @@ export function explainer(o: { token: (chain: number, a: string) => Promise<Toke
       const intent = typeof m.intent === "string" ? m.intent : m.intent ? (Object.values(m.intent)[0] as string) : "";
       // who it's with: the descriptor's own owner (e.g. "Aave", "Morpho"), else its contract name
       const who = m.metadata?.owner || m.metadata?.contractName;
-      return { what: m.interpolatedIntent || intent, fields, ...(who ? { who } : {}) };
+      // short: the descriptor's plain intent ("Borrow from Morpho Market"), for a headline; what: the full sentence,
+      // which can carry every address in the call
+      return { what: m.interpolatedIntent || intent, ...(intent ? { short: intent } : {}), fields, ...(who ? { who } : {}) };
     } catch {
       return null;
     }
