@@ -86,17 +86,32 @@ export function explainer(o) {
                 return null;
             if (m.warnings?.some(w => w.code === "NO_DESCRIPTOR" || w.code === "CALLDATA_DECODE_ERROR" || w.code === "NO_FORMAT_MATCH"))
                 return null;
-            const fields = [];
-            for (const f of m.fields || [])
-                for (const x of isFieldGroup(f) ? f.fields : [f])
-                    fields.push({ label: x.label, value: x.value, ...(x.rawAddress ? { address: x.rawAddress } : {}) });
-            const intent = typeof m.intent === "string" ? m.intent : m.intent ? Object.values(m.intent)[0] : "";
+            // a call inside the call (multicall, a batch: the formatter reads it with its own descriptor): its words, never
+            // its bytes. Its intent stands in for the outer one ("Uniswap" -> "Swap").
+            const fields = [], inner = [];
+            const said = (i) => (typeof i === "string" ? i : i ? Object.values(i)[0] : "");
+            const walk = (fs) => {
+                for (const f of fs || [])
+                    for (const x of isFieldGroup(f) ? f.fields : [f]) {
+                        const e = x.embeddedCalldata?.display;
+                        if (e) {
+                            inner.push({ what: e.interpolatedIntent || said(e.intent), short: said(e.intent) });
+                            walk(e.fields);
+                        }
+                        else
+                            fields.push({ label: x.label, value: x.value, ...(x.rawAddress ? { address: x.rawAddress } : {}) });
+                    }
+            };
+            walk(m.fields);
+            const outer = said(m.intent);
+            const intent = inner.length ? inner.map(x => x.short).filter(Boolean).join(" · ") : outer;
             // who it's with: the descriptor's own owner (e.g. "Aave", "Morpho"), else its contract name
             const who = m.metadata?.owner || m.metadata?.contractName;
             // short: the descriptor's plain intent ("Borrow from Morpho Market"), for a headline; what: the full sentence,
             // which can carry every address in the call
             const src = srcOf(res.index.calldataIndex[`eip155:${chain}:${to.toLowerCase()}`], res.signed);
-            return { what: m.interpolatedIntent || intent, ...(intent ? { short: intent } : {}), fields, ...(who ? { who } : {}), src };
+            const what = inner.length ? inner.map(x => x.what).filter(Boolean).join(" · ") : m.interpolatedIntent || outer;
+            return { what: what || outer, ...(intent ? { short: intent } : {}), fields, ...(who ? { who } : {}), src };
         }
         catch {
             return null;
