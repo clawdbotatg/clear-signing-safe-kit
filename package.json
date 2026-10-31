@@ -1,6 +1,6 @@
 {
   "name": "clear-signing-safe-kit",
-  "version": "0.4.4",
+  "version": "0.4.5",
   "description": "What a Safe transaction does, in plain English: clear signing, swap words, danger rules, and clear-sim answers checked in the browser. Shared by Instant Wallet and wedgie.dev.",
   "license": "MIT",
   "type": "module",
