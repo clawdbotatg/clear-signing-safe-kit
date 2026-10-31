@@ -56,6 +56,6 @@ export async function wedgieSign(o) {
         }
     }
     o.press?.();
-    return ask({ type: "safe_sign", tx: send }, 300_000); // a big one takes the wedgie a while to hash
+    return ask({ type: "safe_sign", tx: send, ...(o.fresh ? { fresh: 1 } : {}) }, 300_000); // a big one takes the wedgie a while to hash
 }
 const hexBytes = (h) => Uint8Array.from({ length: h.length / 2 }, (_, i) => parseInt(h.slice(2 * i, 2 * i + 2), 16));

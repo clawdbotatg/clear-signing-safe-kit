@@ -38,6 +38,9 @@ export declare function wedgieSign(o: {
     /** pieces as raw bytes after their line, when the wedgie takes them (safe_raw): a real wedgie read 2000 hex chars
      * in 0.75 s, a char at a time, and their text broke its heap up (10-30, MemoryError on a swap) */
     askRaw?: WedgieAskRaw;
+    /** the host reopens the port if the wedgie restarts while signing: Safe Signer 54+ may then restart first, for its
+     * drive's memory (a real wedgie ran out reading a swap with it up), and answer on the new connection */
+    fresh?: boolean;
     hello: WedgieHello;
     tx: WedgieTx;
     /** smaller pieces and lines (the phone's drive) */

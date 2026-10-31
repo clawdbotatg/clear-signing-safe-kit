@@ -29,6 +29,9 @@ export async function wedgieSign(o: {
   /** pieces as raw bytes after their line, when the wedgie takes them (safe_raw): a real wedgie read 2000 hex chars
    * in 0.75 s, a char at a time, and their text broke its heap up (10-30, MemoryError on a swap) */
   askRaw?: WedgieAskRaw;
+  /** the host reopens the port if the wedgie restarts while signing: Safe Signer 54+ may then restart first, for its
+   * drive's memory (a real wedgie ran out reading a swap with it up), and answer on the new connection */
+  fresh?: boolean;
   hello: WedgieHello;
   tx: WedgieTx;
   /** smaller pieces and lines (the phone's drive) */
@@ -85,7 +88,7 @@ export async function wedgieSign(o: {
     }
   }
   o.press?.();
-  return ask({ type: "safe_sign", tx: send }, 300_000); // a big one takes the wedgie a while to hash
+  return ask({ type: "safe_sign", tx: send, ...(o.fresh ? { fresh: 1 } : {}) }, 300_000); // a big one takes the wedgie a while to hash
 }
 
 const hexBytes = (h: string) => Uint8Array.from({ length: h.length / 2 }, (_, i) => parseInt(h.slice(2 * i, 2 * i + 2), 16));
