@@ -86,14 +86,18 @@ async function srcOf(path: string | undefined, now: Record<string, string>, chai
 }
 
 // kept while the server is warm, for an hour: a new descriptor of ours shows up without a deploy
-let built: { at: number; r: Promise<(DescriptorResolver & { now: Record<string, string> }) | undefined> } | null = null;
+type Res = DescriptorResolver & { now: Record<string, string>; ef?: Res };
+let built: { at: number; r: Promise<Res | undefined> } | null = null;
 function resolver() {
   if (built && Date.now() - built.at < 3600_000) return built.r;
   const r = Promise.all([fetchPrebuiltRegistryIndex(), ours(), tree("master")])
     .then(([reg, our, now]) => {
       const lower = Object.fromEntries(Object.entries(reg.calldataIndex).map(([k, v]) => [k.toLowerCase(), v]));
-      const index: RegistryIndex = { ...reg, calldataIndex: { ...lower, ...our } };
-      return { index, now, fetchDescriptor: (path: string) => getJson(path.startsWith("https://") ? path : REGISTRY + path) };
+      const fetchDescriptor = (path: string) => getJson(path.startsWith("https://") ? path : REGISTRY + path);
+      // ef: the registry alone, for a function ours doesn't have at an address both have (our LI.FI file is its swaps
+      // only; the registry's has the bridges). The wedgie merges the same way: ours per function (wedgie-dev release.py)
+      const ef: Res = { index: { ...reg, calldataIndex: lower }, now, fetchDescriptor };
+      return { index: { ...reg, calldataIndex: { ...lower, ...our } } as RegistryIndex, now, fetchDescriptor, ef } as Res;
     })
     .catch(() => {
       built = null;
@@ -130,12 +134,17 @@ export function explainer(o: { token: (chain: number, a: string) => Promise<Toke
       const res = await resolver();
       if (!res) return null;
       const to = c.to.toLowerCase() === safe.toLowerCase() ? THIS_SAFE : c.to;
-      const m = await format(
-        { chainId: chain, to, data: c.data as `0x${string}`, value: BigInt(c.value || 0), from: safe },
-        { externalDataProvider: provider(chain), descriptorResolverOptions: { type: "custom", resolver: res, trustedTokens: trusted } },
-      );
-      if (!m.intent && !m.interpolatedIntent) return null;
-      if (m.warnings?.some(w => w.code === "NO_DESCRIPTOR" || w.code === "CALLDATA_DECODE_ERROR" || w.code === "NO_FORMAT_MATCH")) return null;
+      const read = (r: Res) =>
+        format(
+          { chainId: chain, to, data: c.data as `0x${string}`, value: BigInt(c.value || 0), from: safe },
+          { externalDataProvider: provider(chain), descriptorResolverOptions: { type: "custom", resolver: r, trustedTokens: trusted } },
+        );
+      const bad = (m: Awaited<ReturnType<typeof read>>) =>
+        (!m.intent && !m.interpolatedIntent) || m.warnings?.some(w => w.code === "NO_DESCRIPTOR" || w.code === "CALLDATA_DECODE_ERROR" || w.code === "NO_FORMAT_MATCH");
+      let used = res;
+      let m = await read(res);
+      if (bad(m) && res.ef) m = await read((used = res.ef));
+      if (bad(m)) return null;
       // a call inside the call (multicall, a batch: the formatter reads it with its own descriptor): its words, never
       // its bytes. Its intent stands in for the outer one ("Uniswap" -> "Swap").
       const fields: Field[] = [], inner: { what: string; short: string }[] = [];
@@ -157,7 +166,7 @@ export function explainer(o: { token: (chain: number, a: string) => Promise<Toke
       const who = m.metadata?.owner || m.metadata?.contractName;
       // short: the descriptor's plain intent ("Borrow from Morpho Market"), for a headline; what: the full sentence,
       // which can carry every address in the call
-      const src = await srcOf(res.index.calldataIndex[`eip155:${chain}:${to.toLowerCase()}`] as string | undefined, res.now, chain, to, c.data.slice(0, 10));
+      const src = await srcOf(used.index.calldataIndex[`eip155:${chain}:${to.toLowerCase()}`] as string | undefined, res.now, chain, to, c.data.slice(0, 10));
       const what = inner.length ? inner.map(x => x.what).filter(Boolean).join(" · ") : m.interpolatedIntent || outer;
       return { what: what || outer, ...(intent ? { short: intent } : {}), fields, ...(who ? { who } : {}), src };
     } catch {

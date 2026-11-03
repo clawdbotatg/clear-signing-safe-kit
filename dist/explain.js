@@ -63,7 +63,6 @@ async function srcOf(path, now, chain, to, sel) {
         return "audited";
     return (await checked(chain, to, sel, path, now).catch(() => false)) ? "checked" : "ef";
 }
-// kept while the server is warm, for an hour: a new descriptor of ours shows up without a deploy
 let built = null;
 function resolver() {
     if (built && Date.now() - built.at < 3600_000)
@@ -71,8 +70,11 @@ function resolver() {
     const r = Promise.all([fetchPrebuiltRegistryIndex(), ours(), tree("master")])
         .then(([reg, our, now]) => {
         const lower = Object.fromEntries(Object.entries(reg.calldataIndex).map(([k, v]) => [k.toLowerCase(), v]));
-        const index = { ...reg, calldataIndex: { ...lower, ...our } };
-        return { index, now, fetchDescriptor: (path) => getJson(path.startsWith("https://") ? path : REGISTRY + path) };
+        const fetchDescriptor = (path) => getJson(path.startsWith("https://") ? path : REGISTRY + path);
+        // ef: the registry alone, for a function ours doesn't have at an address both have (our LI.FI file is its swaps
+        // only; the registry's has the bridges). The wedgie merges the same way: ours per function (wedgie-dev release.py)
+        const ef = { index: { ...reg, calldataIndex: lower }, now, fetchDescriptor };
+        return { index: { ...reg, calldataIndex: { ...lower, ...our } }, now, fetchDescriptor, ef };
     })
         .catch(() => {
         built = null;
@@ -110,10 +112,13 @@ export function explainer(o) {
             if (!res)
                 return null;
             const to = c.to.toLowerCase() === safe.toLowerCase() ? THIS_SAFE : c.to;
-            const m = await format({ chainId: chain, to, data: c.data, value: BigInt(c.value || 0), from: safe }, { externalDataProvider: provider(chain), descriptorResolverOptions: { type: "custom", resolver: res, trustedTokens: trusted } });
-            if (!m.intent && !m.interpolatedIntent)
-                return null;
-            if (m.warnings?.some(w => w.code === "NO_DESCRIPTOR" || w.code === "CALLDATA_DECODE_ERROR" || w.code === "NO_FORMAT_MATCH"))
+            const read = (r) => format({ chainId: chain, to, data: c.data, value: BigInt(c.value || 0), from: safe }, { externalDataProvider: provider(chain), descriptorResolverOptions: { type: "custom", resolver: r, trustedTokens: trusted } });
+            const bad = (m) => (!m.intent && !m.interpolatedIntent) || m.warnings?.some(w => w.code === "NO_DESCRIPTOR" || w.code === "CALLDATA_DECODE_ERROR" || w.code === "NO_FORMAT_MATCH");
+            let used = res;
+            let m = await read(res);
+            if (bad(m) && res.ef)
+                m = await read((used = res.ef));
+            if (bad(m))
                 return null;
             // a call inside the call (multicall, a batch: the formatter reads it with its own descriptor): its words, never
             // its bytes. Its intent stands in for the outer one ("Uniswap" -> "Swap").
@@ -138,7 +143,7 @@ export function explainer(o) {
             const who = m.metadata?.owner || m.metadata?.contractName;
             // short: the descriptor's plain intent ("Borrow from Morpho Market"), for a headline; what: the full sentence,
             // which can carry every address in the call
-            const src = await srcOf(res.index.calldataIndex[`eip155:${chain}:${to.toLowerCase()}`], res.now, chain, to, c.data.slice(0, 10));
+            const src = await srcOf(used.index.calldataIndex[`eip155:${chain}:${to.toLowerCase()}`], res.now, chain, to, c.data.slice(0, 10));
             const what = inner.length ? inner.map(x => x.what).filter(Boolean).join(" · ") : m.interpolatedIntent || outer;
             return { what: what || outer, ...(intent ? { short: intent } : {}), fields, ...(who ? { who } : {}), src };
         }
