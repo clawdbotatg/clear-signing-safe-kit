@@ -8,12 +8,25 @@ type Log = {
     transactionHash: string;
     logIndex: string;
 };
-export declare function safeLogs(rpc: Rpc, chain: number, safe: string, enough?: number, fresh?: boolean): Promise<{
+type Tok = {
+    symbol: string;
+    decimals: number;
+};
+/** Logs for filter f, kept for as long as the page lives: the first read is all of them (logsBack), every later one
+ * only the blocks since (a few back too: a block can be replaced), so a re-read costs one small getLogs, not the
+ * whole history again. Not fresh: the copy from under a minute ago, as it is. */
+type Kept = {
     logs: Log[];
     from: bigint;
-}>;
-/** The last `limit` things that happened, newest first, as Safe's all-transactions results. */
-export declare function chainHistory(rpc: Rpc, chain: number, safe: string, usdc?: string, limit?: number): Promise<any[]>;
+    head: bigint;
+};
+/** The Safe's own logs used here, oldest first (history and "did it run" share them). fresh: read the new blocks now. */
+export declare function safeLogs(rpc: Rpc, chain: number, safe: string, enough?: number, fresh?: boolean): Promise<Kept>;
+/** The tokens whose transfers in Activity shows on this chain (lowercase address → symbol, decimals). */
+export declare function inTokens(chain: number, usdc?: string): Record<string, Tok>;
+/** The last `limit` things that happened, newest first, as Safe's all-transactions results. fresh: read the chain's
+ * new blocks now (cheap: what was read before is kept), not the copy from under a minute ago. */
+export declare function chainHistory(rpc: Rpc, chain: number, safe: string, usdc?: string, limit?: number, fresh?: boolean): Promise<any[]>;
 /** safeTxHash h: ran (its transaction hash), or not on chain yet (null). */
 export declare function ranOnChain(rpc: Rpc, chain: number, safe: string, h: string, fresh?: boolean): Promise<{
     transactionHash: string;

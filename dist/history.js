@@ -1,6 +1,7 @@
 // A Safe's past from its own chain (eth_getLogs through Alchemy), no Safe API: what it ran, money that came in,
 // and the transaction that made it. Shaped like Safe's all-transactions answer, so the page shows either.
-// One getLogs on the Safe from block 0 (only the events used here) + one on the main tokens (transfers to it). Too
+// One getLogs on the Safe from block 0 (only the events used here) + one on the main tokens (transfers to it), once:
+// every read after that asks only for the blocks since. Too
 // many logs (Alchemy's cap: 10K), or a chain that allows only a short range (Gnosis, Celo, Sonic, Avalanche: 10,000
 // blocks): read back from the newest block, a window at a time, as far as MAX_WINDOWS goes. Used by wedgie.dev and
 // Instant Wallet; wedgie-dev tools/safecompare.mjs checks it against Safe's API on real Safes.
@@ -73,16 +74,36 @@ async function logsBack(rpc, f, enough) {
         return { logs: out.sort(order), from: to + 1n };
     }
 }
-/** The Safe's own logs used here, oldest first (kept a minute: history and "did it run" share them). */
 const kept = new Map();
-export function safeLogs(rpc, chain, safe, enough = 30, fresh = false) {
-    const k = `${chain}:${safe.toLowerCase()}`, hit = kept.get(k);
+const BACK = 12n;
+function keptLogs(rpc, k, f, enough, fresh) {
+    const hit = kept.get(k);
     if (!fresh && hit && Date.now() - hit.at < 60_000)
         return hit.p;
-    const p = logsBack(rpc, { address: safe, topics: [[SMT, OK, FAIL, RECEIVED]] }, (l) => l.length >= enough);
-    p.catch(() => kept.delete(k));
-    kept.set(k, { at: Date.now(), p });
+    const all = async () => {
+        const head = BigInt(await rpc("eth_blockNumber", []));
+        return { ...(await logsBack(rpc, f, enough)), head };
+    };
+    const more = async (old) => {
+        const head = BigInt(await rpc("eth_blockNumber", []));
+        const start = old.head > BACK ? old.head - BACK : 0n;
+        const add = await rpc("eth_getLogs", [{ ...f, fromBlock: hx(start), toBlock: "latest" }]);
+        return { logs: [...old.logs.filter((l) => BigInt(l.blockNumber) < start), ...add.sort(order)], from: old.from, head: head > old.head ? head : old.head };
+    };
+    // the one before failed, or the new blocks can't be read (a range too long for this chain): all of them again
+    const p = hit ? hit.p.then(more).catch(all) : all();
+    const mine = { at: Date.now(), p };
+    p.catch(() => kept.get(k) === mine && kept.delete(k));
+    kept.set(k, mine);
     return p;
+}
+/** The Safe's own logs used here, oldest first (history and "did it run" share them). fresh: read the new blocks now. */
+export function safeLogs(rpc, chain, safe, enough = 30, fresh = false) {
+    return keptLogs(rpc, `${chain}:${safe.toLowerCase()}`, { address: safe, topics: [[SMT, OK, FAIL, RECEIVED]] }, (l) => l.length >= enough, fresh);
+}
+/** The tokens whose transfers in Activity shows on this chain (lowercase address → symbol, decimals). */
+export function inTokens(chain, usdc) {
+    return { ...TOKENS[chain], ...(usdc ? { [usdc.toLowerCase()]: t("USDC", 6) } : {}) };
 }
 const iso = (s) => new Date(s * 1000).toISOString().replace(".000Z", "Z");
 /** Each block's time: Alchemy puts it on the log; else one eth_getBlockByNumber per block. */
@@ -95,13 +116,17 @@ async function times(rpc, logs) {
     }));
     return out;
 }
-/** The last `limit` things that happened, newest first, as Safe's all-transactions results. */
-export async function chainHistory(rpc, chain, safe, usdc, limit = 25) {
-    const toks = { ...TOKENS[chain], ...(usdc ? { [usdc.toLowerCase()]: t("USDC", 6) } : {}) };
+/** The last `limit` things that happened, newest first, as Safe's all-transactions results. fresh: read the chain's
+ * new blocks now (cheap: what was read before is kept), not the copy from under a minute ago. */
+export async function chainHistory(rpc, chain, safe, usdc, limit = 25, fresh = false) {
+    const toks = inTokens(chain, usdc);
     const pad = "0x" + safe.slice(2).toLowerCase().padStart(64, "0");
-    const { logs, from } = await safeLogs(rpc, chain, safe, limit + 5);
-    const ins = Object.keys(toks).length ? (await logsBack(rpc, { address: Object.keys(toks), topics: [TRANSFER, null, pad] }, (l) => l.length >= limit)
-        .catch(() => ({ logs: [] }))).logs : [];
+    // both at once; fresh: only the blocks since the last read
+    const [{ logs, from }, ins] = await Promise.all([
+        safeLogs(rpc, chain, safe, limit + 5, fresh),
+        Object.keys(toks).length ? keptLogs(rpc, `in:${chain}:${safe.toLowerCase()}:${Object.keys(toks).join()}`, { address: Object.keys(toks), topics: [TRANSFER, null, pad] }, (l) => l.length >= limit, fresh)
+            .then((r) => r.logs, () => []) : Promise.resolve([]),
+    ]);
     // ran: every nonce is one ExecutionSuccess/Failure, in order (nothing else moves it), so with all the logs the nth
     // is nonce n; with only the newest, count down from the Safe's nonce now. A Safe on the L2 singleton says what it
     // ran (SafeMultiSigTransaction, just before, same transaction), nonce and all

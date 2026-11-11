@@ -63,3 +63,39 @@ test("a swap of the router's whole balance reads the wrapped amount, never 2^255
   assert.equal(u.pay.amount, "");
   assert.doesNotMatch(u.text, /\d{20}/);
 });
+
+// history: the first read is the whole chain, a fresh one only the blocks since
+test("chainHistory: a fresh read asks only for new blocks, and shows what came in", async () => {
+  const { chainHistory } = await import("../dist/index.js");
+  const { keccak256, toHex, pad } = await import("viem");
+  const safe = "0x9999999999999999999999999999999999999999";
+  const RECEIVED = keccak256(toHex("SafeReceived(address,uint256)"));
+  const got = (block, n) => ({ address: safe, topics: [RECEIVED, pad("0x4cfab32186e65e2a39ec0e882e11380cbf2f8a2f")], data: pad(toHex(n)), blockNumber: toHex(block),
+    blockTimestamp: toHex(1_700_000_000 + block), transactionHash: pad(toHex(block)), logIndex: "0x0" });
+  let head = 1000, chain = [got(500, 5n)];
+  const asked = [];
+  const rpc = async (method, [f]) => {
+    if (method === "eth_blockNumber") return toHex(head);
+    if (method !== "eth_getLogs") throw new Error(method);
+    asked.push(f.fromBlock);
+    if (Array.isArray(f.address)) return [];
+    const from = f.fromBlock === "earliest" ? 0 : Number(f.fromBlock);
+    return chain.filter(l => Number(l.blockNumber) >= from);
+  };
+  assert.equal((await chainHistory(rpc, 8453, safe, undefined, 6)).length, 1);
+  assert.deepEqual([...new Set(asked)], ["earliest"]);
+  // within the minute and not fresh: nothing asked
+  asked.length = 0;
+  await chainHistory(rpc, 8453, safe, undefined, 6);
+  assert.deepEqual(asked, []);
+  // money lands; a fresh read asks from a few blocks under the last head, and has both
+  head = 1010;
+  chain.push(got(1005, 7n));
+  const h = await chainHistory(rpc, 8453, safe, undefined, 6, true);
+  assert.deepEqual([...new Set(asked)], [toHex(1000 - 12)]);
+  assert.deepEqual(h.map(t => t.transfers[0].value), ["7", "5"]);
+  // a block replaced (the 7 is gone, a 9 in its place): the old one doesn't stay
+  head = 1012;
+  chain = [chain[0], got(1006, 9n)];
+  assert.deepEqual((await chainHistory(rpc, 8453, safe, undefined, 6, true)).map(t => t.transfers[0].value), ["9", "5"]);
+});
