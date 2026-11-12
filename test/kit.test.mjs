@@ -64,6 +64,48 @@ test("a swap of the router's whole balance reads the wrapped amount, never 2^255
   assert.doesNotMatch(u.text, /\d{20}/);
 });
 
+// 11-12 (Austin): Uniswap said "5 USDC", we said "Swap USDbC". Its newer router (0xd6145b…) added a per-hop price
+// limit to the V4 swap structs; read as the old shape the first hops were dropped (or an offset read as the amount).
+// Built here in the newer shapes, as two real Base swaps were (0x1086749a…, 0xab3c8bfe…).
+test("a swap on Uniswap's newer router names the token paid, through hops and split routes", async () => {
+  const { swapWords } = await import("../dist/index.js");
+  const { encodeAbiParameters, parseAbiParameters, zeroAddress } = await import("viem");
+  const WETH = "0x4200000000000000000000000000000000000006";
+  const USDC = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913";
+  const USDbC = "0xd9aaec86b65d86f6a7b5b1b0c42ffa531710b6ca";
+  const USDT = "0xfde4c96c8593536e31f229ea8f37b2ada2699bb2";
+  const UR2 = "0xd6145b2d3f379919e8cdeda7b97e37c4b2ca9c40";
+  const SY = { [USDC]: ["USDC", 6], [USDbC]: ["USDbC", 6], [USDT]: ["USDT", 6], [WETH]: ["WETH", 18] };
+  const tok = async a => (SY[a.toLowerCase()] ? { symbol: SY[a.toLowerCase()][0], decimals: SY[a.toLowerCase()][1] } : null);
+  const exec = (commands, inputs) => encodeFunctionData({ abi: parseAbi(["function execute(bytes commands, bytes[] inputs, uint256 deadline)"]), functionName: "execute", args: [commands, inputs, 9999999999n] });
+  const v4 = (actions, params) => encodeAbiParameters(parseAbiParameters("bytes, bytes[]"), [actions, params]);
+  // SWAP_EXACT_IN_SINGLE, newer shape: a price limit (uint256) before hookData
+  const single = (c0, c1, zeroForOne, amountIn) =>
+    encodeAbiParameters(parseAbiParameters("((address,address,uint24,int24,address), bool, uint128, uint128, uint256, bytes)"), [[[c0, c1, 500, 10, zeroAddress], zeroForOne, amountIn, 0n, 0n, "0x"]]);
+  const settle = encodeAbiParameters(parseAbiParameters("address, uint256, bool"), [USDC, 5_000_000n, true]);
+  const take = encodeAbiParameters(parseAbiParameters("address, address, uint256"), [USDbC, "0x0000000000000000000000000000000000000002", 0n]);
+  // 5 USDC in, split: 2 straight to ETH, 3 to USDbC (V4), then that USDbC to WETH (V3, all the router holds), unwrapped
+  const hops = v4("0x0b06060e", [settle, single(USDC, USDbC, true, 3_000_000n), single(zeroAddress, USDC, false, 2_000_000n), take]);
+  const v3 = encodeAbiParameters(parseAbiParameters("address, uint256, uint256, bytes, bool"), ["0x0000000000000000000000000000000000000002", 1n << 255n, 0n, encodePacked(["address", "uint24", "address"], [USDbC, 500, WETH]), false]);
+  const unwrap = encodeAbiParameters(parseAbiParameters("address, uint256"), [SAFE, 2_419_490_000_000_000n]);
+  const hop = await swapWords(8453, { to: UR2, data: exec("0x10000c", [hops, v3, unwrap]) }, "ETH", tok);
+  assert.equal(hop.text, "Swap 5 USDC for at least 0.00241949 ETH on Uniswap");
+  assert.equal(hop.pay.symbol, "USDC");
+  assert.equal(hop.pay.amount, "5");
+  assert.equal(hop.get.symbol, "ETH");
+  // SWAP_EXACT_IN (a path), newer shape: a list of price limits after the path. 500 USDC, not that list's offset
+  const many = encodeAbiParameters(parseAbiParameters("(address, (address,uint24,int24,address,bytes)[], uint256[], uint128, uint128)"), [[USDC, [[USDT, 6, 1, zeroAddress, "0x"]], [0n], 500_000_000n, 487_937_000n]]);
+  const path = await swapWords(8453, { to: UR2, data: exec("0x10", [v4("0x07", [many])]) }, "ETH", tok);
+  assert.equal(path.text, "Swap 500 USDC for at least 487.937 USDT on Uniswap");
+  // the older shapes still read
+  const old1 = encodeAbiParameters(parseAbiParameters("((address,address,uint24,int24,address), bool, uint128, uint128, bytes)"), [[[USDC, USDT, 6, 1, zeroAddress], true, 7_000_000n, 6_900_000n, "0x"]]);
+  const oldN = encodeAbiParameters(parseAbiParameters("(address, (address,uint24,int24,address,bytes)[], uint128, uint128)"), [[USDC, [[USDT, 6, 1, zeroAddress, "0x"]], 500_000_000n, 487_937_000n]]);
+  const o1 = await swapWords(8453, { to: UR2, data: exec("0x10", [v4("0x06", [old1])]) }, "ETH", tok);
+  assert.equal(o1.text, "Swap 7 USDC for at least 6.9 USDT on Uniswap");
+  const oN = await swapWords(8453, { to: UR2, data: exec("0x10", [v4("0x07", [oldN])]) }, "ETH", tok);
+  assert.equal(oN.text, "Swap 500 USDC for at least 487.937 USDT on Uniswap");
+});
+
 // history: the first read is the whole chain, a fresh one only the blocks since
 test("chainHistory: a fresh read asks only for new blocks, and shows what came in", async () => {
   const { chainHistory } = await import("../dist/index.js");

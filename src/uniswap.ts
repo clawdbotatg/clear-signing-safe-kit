@@ -16,6 +16,12 @@ type Leg = { tin: string; tout: string; amt: bigint; lim: bigint; exactIn: boole
  * PERMIT2_TRANSFER_FROM) or in the call's value. Shown as a number it read "−57,896,044,618,658,100,000,… ETH" (10-30). */
 export const CONTRACT_BALANCE = 1n << 255n;
 
+/** The nth 32-byte word of ABI data, as a number (-1: not there). */
+const word = (d: Hex, n: number) => {
+  const w = d.slice(2 + 64 * n, 66 + 64 * n);
+  return w.length === 64 ? BigInt("0x" + w) : -1n;
+};
+
 /** The tokens at each end of a V3 path (20-byte token, 3-byte fee, 20-byte token, …). */
 const v3ends = (p: Hex): [string, string] => ["0x" + p.slice(2, 42), "0x" + p.slice(-40)];
 
@@ -59,15 +65,28 @@ function legs(commands: Hex, inputs: readonly Hex[]): { legs: Leg[]; unwrap: boo
           const k = parseInt(a, 16);
           const p = params[j];
           if (k === 0x06 || k === 0x08) {
-            const [[key, zeroForOne, x, y]] = decodeAbiParameters(parseAbiParameters(`(${POOLKEY}, bool, uint128, uint128, bytes)`), p) as any;
+            // the newer router (0xd6145b…, 11-12) put a per-hop price limit before hookData: one more word, so
+            // hookData's offset is 0x140 in the 11th word, not 0x120 in the 10th. Read as the old shape it threw, the
+            // hop was dropped, and a USDC swap that went through USDbC read "Swap USDbC".
+            const shape = word(p, 9) !== 0x120n && word(p, 10) === 0x140n ? `(${POOLKEY}, bool, uint128, uint128, uint256, bytes)` : `(${POOLKEY}, bool, uint128, uint128, bytes)`;
+            const [[key, zeroForOne, x, y]] = decodeAbiParameters(parseAbiParameters(shape), p) as any;
             const [c0, c1] = [key[0], key[1]];
             const [tin, tout] = zeroForOne ? [c0, c1] : [c1, c0];
             out.push({ tin, tout, amt: x, lim: y, exactIn: k === 0x06, open: k === 0x06 && x === 0n });
+          } else if (k === 0x0b) {
+            // SETTLE(currency, amount, payerIsUser): what the user pays in, when it's a number
+            const [, m, user] = decodeAbiParameters(parseAbiParameters("address, uint256, bool"), p);
+            if (user && m > 0n && m < CONTRACT_BALANCE) funded += m;
           } else if (k === 0x0f) {
             const [, m] = decodeAbiParameters(parseAbiParameters("address, uint256"), p);
             if (m > min) min = m;
           } else if (k === 0x07 || k === 0x09) {
-            const [[cur, path, x, y]] = decodeAbiParameters(parseAbiParameters("(address, (address,uint24,int24,address,bytes)[], uint128, uint128)"), p) as any;
+            // the newer router: a list of per-hop price limits after the path (the path's offset is 0xa0, not 0x80).
+            // Read as the old shape, that list's offset came out as the amount.
+            const PATH = "(address,uint24,int24,address,bytes)[]";
+            const fresh = word(p, 2) === 0xa0n;
+            const r = decodeAbiParameters(parseAbiParameters(fresh ? `(address, ${PATH}, uint256[], uint128, uint128)` : `(address, ${PATH}, uint128, uint128)`), p) as any;
+            const [cur, path, x, y] = fresh ? [r[0][0], r[0][1], r[0][3], r[0][4]] : r[0];
             const end = path.length ? path[path.length - 1][0] : cur;
             const start = path.length ? path[0][0] : cur;
             out.push(k === 0x07 ? { tin: cur, tout: end, amt: x, lim: y, exactIn: true, open: x === 0n } : { tin: start, tout: cur, amt: x, lim: y, exactIn: false });
@@ -93,24 +112,42 @@ export async function uniswapWords(data: Hex, native: string, wrapped: string | 
   }
   const { legs: ls, unwrap, wrap, min, funded } = legs(d.args[0] as Hex, d.args[1] as readonly Hex[]);
   if (!ls.length) return null;
-  // a route split over several pools: the first leg's way in, the last's way out, amounts added up
+  // A route can be split over pools and hop through other tokens on the way (USDC → USDbC → ETH next to USDC → ETH).
+  // What's paid: the token that only ever goes in. What's got: the one that only ever comes out. The coin and its
+  // wrapped form count as one. Not one of each (a loop, a route we can't follow): the first hop's way in and the
+  // last's way out, as before. Amounts: the hops that start at the paid token, the minimums of the hops that end at
+  // the got one.
   const first = ls[0];
   const last = ls[ls.length - 1];
-  const same = ls.filter(l => l.tin.toLowerCase() === first.tin.toLowerCase() && l.tout.toLowerCase() === last.tout.toLowerCase());
+  const norm = (a: string) => (wrapped && a.toLowerCase() === wrapped.toLowerCase() ? zeroAddress : a.toLowerCase());
+  const ins = new Set(ls.map(l => norm(l.tin)));
+  const outs = new Set(ls.map(l => norm(l.tout)));
+  const onlyIn = [...ins].filter(t => !outs.has(t));
+  const onlyOut = [...outs].filter(t => !ins.has(t));
+  const payT = onlyIn.length === 1 ? onlyIn[0] : norm(first.tin);
+  const getT = onlyOut.length === 1 ? onlyOut[0] : norm(last.tout);
+  const from = ls.filter(l => norm(l.tin) === payT);
+  const to_ = ls.filter(l => norm(l.tout) === getT);
+  const exactIn = from[0].exactIn;
   // an amount that's a flag (all the router holds, the open delta): what went in before it, else the coin sent with the call
-  const flagged = same.some(l => l.exactIn && (l.open || l.amt >= CONTRACT_BALANCE));
-  const ethIn = first.tin.toLowerCase() === zeroAddress || (!!wrapped && first.tin.toLowerCase() === wrapped.toLowerCase());
-  const sent = funded || (ethIn ? value : 0n);
-  const amt: bigint | null = flagged ? (sent > 0n && same.every(l => l.exactIn && (l.open || l.amt >= CONTRACT_BALANCE)) ? sent : null) : same.reduce((s, l) => s + l.amt, 0n);
-  let lim = same.reduce((s, l) => s + l.lim, 0n);
-  if (first.exactIn && lim < min) lim = min;
-  const name = async (a: string, eth: boolean): Promise<Tok> =>
-    a.toLowerCase() === zeroAddress || (eth && wrapped && a.toLowerCase() === wrapped.toLowerCase()) ? { symbol: native, decimals: 18 } : token(a);
-  const [ti, to] = await Promise.all([name(first.tin, wrap), name(last.tout, unwrap)]);
+  const isFlag = (l: Leg) => l.exactIn && (!!l.open || l.amt >= CONTRACT_BALANCE);
+  const flagged = from.some(isFlag);
+  const sent = funded || (payT === zeroAddress ? value : 0n);
+  const amt: bigint | null = exactIn ? (flagged ? (sent > 0n ? sent : null) : from.reduce((s, l) => s + l.amt, 0n)) : to_.reduce((s, l) => s + l.amt, 0n);
+  let lim = (exactIn ? to_ : from).reduce((s, l) => s + l.lim, 0n);
+  if (exactIn && lim < min) lim = min;
+  // the wrapped coin reads as the coin when the call wraps it on the way in / unwraps it on the way out
+  const name = async (t: string, legs: Leg[], end: "tin" | "tout", eth: boolean): Promise<Tok> =>
+    t === zeroAddress
+      ? eth || !wrapped || legs.some(l => l[end].toLowerCase() === zeroAddress)
+        ? { symbol: native, decimals: 18 }
+        : token(wrapped)
+      : token(legs[0][end]); // the address as the call wrote it
+  const [ti, to] = await Promise.all([name(payT, from, "tin", wrap), name(getT, to_, "tout", unwrap)]);
   if (!ti || !to) return null;
   const f = (v: bigint, t: NonNullable<Tok>) => `${Number(formatUnits(v, t.decimals)).toLocaleString("en-US", { maximumSignificantDigits: 6 })} ${t.symbol}`;
   const u = (v: bigint, t: NonNullable<Tok>) => formatUnits(v, t.decimals);
-  if (first.exactIn) {
+  if (exactIn) {
     const paid = amt === null ? ti.symbol : f(amt, ti);
     return {
       text: lim === 0n ? `Swap ${paid} for ${to.symbol} (no minimum)` : `Swap ${paid} for at least ${f(lim, to)}`,
