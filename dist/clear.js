@@ -99,8 +99,17 @@ export async function clearBundle(tag, chain, t, review = 0) {
     const tk = Object.entries(toks || {})
         .filter(([a]) => named.includes(a.slice(2).toLowerCase()))
         .map(([, s]) => s);
+    // and a token on another chain (a bridge names what arrives on the far side): the addresses the calldata names, in
+    // the other chains' lists (the release's index says which chains it has; an older release: none)
+    const index = (await file(tag, 0, "index", `${tag}/index`));
+    const words = new Set(calls.flatMap(c => [...addresses(c.data)]));
+    const far = await Promise.all((index?.chains || []).filter(c => c !== chain).map(c => file(tag, c, "tokens")));
+    for (const f of far)
+        for (const [a, s] of Object.entries(f || {}))
+            if (words.has(a.slice(2).toLowerCase()))
+                tk.push(s);
     // as much as fits, most needed first: the calls' own descriptors, the tokens, then the calls inside
-    const said = +(await file(tag, 0, "index", `${tag}/index`))?.clearMax || 0;
+    const said = +index?.clearMax || 0;
     const max = said ? Math.min(said, CLEAR_BUF) : CLEAR_MAX;
     let size = 8;
     const take = (l) => l.filter(s => size + s.length / 2 <= max && ((size += s.length / 2), true));
