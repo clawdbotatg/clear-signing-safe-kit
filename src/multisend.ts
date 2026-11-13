@@ -10,22 +10,37 @@ export type SafeTxLike = { to: string; value: bigint; data: Hex; operation: numb
 const eq = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 const word = (n: bigint | number, bytes = 32) => BigInt(n).toString(16).padStart(bytes * 2, "0");
 
-/** The calls in a multiSend(bytes) calldata: operation, to, value, data each. Throws on a batch it can't read. */
+/**
+ * The calls in a multiSend(bytes) calldata: operation, to, value, data each. Throws on a batch it can't read.
+ * Reads it only the way it's always written (audit 11-13): the offset word is 0x20, the length is exactly what's
+ * there, the padding is zeros, each entry fits, each operation is 0 or 1. MultiSend itself follows the offset word, so
+ * a reader that took the calls from a fixed place could be shown a decoy while the chain ran the calls further on.
+ */
 export function unbatch(data: string): Inner[] {
-  const h = data.replace(/^0x/, "").toLowerCase();
-  if (!h.startsWith(MULTISEND_SELECTOR.slice(2))) throw new Error("not a multiSend");
-  const n = parseInt(h.slice(72, 136), 16) * 2;
+  const h = data.replace(/^0x/i, "").toLowerCase();
+  if (!/^([0-9a-f]{2})*$/.test(h)) throw new Error("bad multiSend hex");
+  if (!h.startsWith(MULTISEND_SELECTOR.slice(2)) || h.length < 136) throw new Error("not a multiSend");
+  if (BigInt("0x" + h.slice(8, 72)) !== 32n) throw new Error("bad multiSend offset");
+  const bytes = BigInt("0x" + h.slice(72, 136));
+  if (bytes > BigInt(h.length)) throw new Error("bad multiSend length");
+  const n = Number(bytes) * 2;
+  if (h.length !== 136 + Math.ceil(n / 64) * 64) throw new Error("bad multiSend length"); // nothing missing, nothing extra
+  if (/[^0]/.test(h.slice(136 + n))) throw new Error("bad multiSend padding");
   const p = h.slice(136, 136 + n);
-  if (p.length !== n) throw new Error("short multiSend");
   const out: Inner[] = [];
   let o = 0;
   while (o < p.length) {
     if (o + 170 > p.length) throw new Error("bad multiSend");
-    const len = parseInt(p.slice(o + 106, o + 170), 16) * 2;
+    const operation = parseInt(p.slice(o, o + 2), 16);
+    if (operation > 1) throw new Error("bad multiSend operation");
+    const size = BigInt("0x" + p.slice(o + 106, o + 170));
+    if (size > BigInt(p.length)) throw new Error("bad multiSend");
+    const len = Number(size) * 2;
     if (o + 170 + len > p.length) throw new Error("bad multiSend");
-    out.push({ operation: parseInt(p.slice(o, o + 2), 16), to: "0x" + p.slice(o + 2, o + 42), value: BigInt("0x" + p.slice(o + 42, o + 106)), data: ("0x" + p.slice(o + 170, o + 170 + len)) as Hex });
+    out.push({ operation, to: "0x" + p.slice(o + 2, o + 42), value: BigInt("0x" + p.slice(o + 42, o + 106)), data: ("0x" + p.slice(o + 170, o + 170 + len)) as Hex });
     o += 170 + len;
   }
+  if (!out.length) throw new Error("empty multiSend");
   return out;
 }
 

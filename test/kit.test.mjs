@@ -141,3 +141,28 @@ test("chainHistory: a fresh read asks only for new blocks, and shows what came i
   chain = [chain[0], got(1006, 9n)];
   assert.deepEqual((await chainHistory(rpc, 8453, safe, undefined, 6, true)).map(t => t.transfers[0].value), ["9", "5"]);
 });
+
+// audit 11-13: MultiSend follows the ABI offset word; a reader that didn't showed a decoy and the chain ran something else
+test("unbatch reads a batch only the way MultiSend does", () => {
+  const w = n => BigInt(n).toString(16).padStart(64, "0");
+  const blob = cs => batch(cs).slice(10 + 64); // the length word, the packed calls, the padding
+  const decoy = blob([calls[0]]);
+  const mod = encodeFunctionData({ abi: parseAbi(["function enableModule(address)"]), functionName: "enableModule", args: ["0x5555555555555555555555555555555555555555"] });
+  const real = blob([{ to: SAFE, value: 0n, data: mod }]);
+  // selector, offset pointing past the decoy, the decoy at 0x20, the real calls where the offset points
+  const tricked = "0x8d80ff0a" + w(32 + decoy.length / 2) + decoy + real;
+  assert.throws(() => unbatch(tricked), "an offset that isn't 0x20");
+  assert.match(dangers(SAFE, { to: MULTISEND_CALL_ONLY, value: 0n, data: tricked, operation: 1 })[0], /can't be read/);
+  assert.deepEqual(callsOf({ to: MULTISEND_CALL_ONLY, value: 0n, data: tricked, operation: 1 }), []);
+  assert.throws(() => unbatch(batch(calls) + "00".repeat(32)), "extra bytes after the batch");
+  assert.throws(() => unbatch(batch(calls).slice(0, -64)), "a batch cut short");
+  assert.throws(() => unbatch(batch(calls).replace(/(0{62}20[0-9a-f]{64})00/, "$102")), "an inner operation above 1");
+  assert.throws(() => unbatch("0x8d80ff0a" + w(32) + w(0)), "an empty batch");
+  assert.throws(() => unbatch(batch(calls).slice(0, -1)), "half a byte");
+  assert.throws(() => unbatch(batch([calls[2]]).replace(/0000$/, "0100")), "padding that isn't zeros");
+  // what it does read is still read, upper case or lower
+  assert.equal(unbatch(batch(calls)).length, 3);
+  assert.equal(unbatch(batch(calls).toUpperCase().replace("0X", "0x")).length, 3);
+  const deleg = batch(calls).replace(/(0{62}20[0-9a-f]{64})00/, "$101");
+  assert.equal(unbatch(deleg)[0].operation, 1);
+});

@@ -16,7 +16,12 @@ export type SafeTxLike = {
     data: Hex;
     operation: number;
 };
-/** The calls in a multiSend(bytes) calldata: operation, to, value, data each. Throws on a batch it can't read. */
+/**
+ * The calls in a multiSend(bytes) calldata: operation, to, value, data each. Throws on a batch it can't read.
+ * Reads it only the way it's always written (audit 11-13): the offset word is 0x20, the length is exactly what's
+ * there, the padding is zeros, each entry fits, each operation is 0 or 1. MultiSend itself follows the offset word, so
+ * a reader that took the calls from a fixed place could be shown a decoy while the chain ran the calls further on.
+ */
 export declare function unbatch(data: string): Inner[];
 /** multiSend(bytes) calldata for these plain calls. */
 export declare function batch(calls: Call[]): Hex;
