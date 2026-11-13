@@ -87,7 +87,8 @@ export async function clearBundle(tag: string, chain: number, t: { to: string; d
     }
     // a call inside the call (multicall, permitAndCall, a Safe setup): any contract the calldata names, or this one
     // (a multicall into itself), whose selector the calldata carries. All at once, not one after another.
-    const found = await Promise.all([...new Set([c.to, ...addresses(c.data)])].map(a => descs(tag, chain, "0x" + a, review)));
+    // ANY too: a token call inside the call (a Multicall3 batch's approve, transfer) to a token with no descriptor of its own
+    const found = await Promise.all([...new Set([c.to, ...addresses(c.data)])].map(a => descs(tag, chain, "0x" + a, review)).concat(descs(tag, chain, ANY, review)));
     for (const g of found) {
       if (!g) continue;
       for (const [s, x] of Object.entries(g))
